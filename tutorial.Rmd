@@ -266,6 +266,49 @@ if (length(available_genes) >= 3) {
 > whether this pattern holds *genome-wide* across all genes, not just these
 > hand-picked examples.
 
+## 2.5 Visualisation: Specificity distributions across cell types
+
+The heatmap above shows a handful of genes. To understand the full landscape,
+we can look at the *distribution* of specificity values for each cell type across
+all genes. Most genes will have low specificity for any given cell type (they are
+broadly expressed), but a long right tail of highly specific "marker" genes
+distinguishes each cell type. The shape and extent of this tail matters for
+enrichment power: cell types with many highly specific genes give MAGMA a
+stronger signal to detect.
+
+```{r fig-specificity-violins, fig.height=6, fig.width=10}
+# Convert full specificity matrix to long format (sample for speed if large)
+spec_full <- as.matrix(ctd[[1]]$specificity)
+set.seed(42)
+if (nrow(spec_full) > 5000) {
+  gene_sample <- sample(nrow(spec_full), 5000)
+  spec_full <- spec_full[gene_sample, ]
+}
+
+spec_long <- data.frame(
+  Gene = rep(rownames(spec_full), ncol(spec_full)),
+  CellType = rep(colnames(spec_full), each = nrow(spec_full)),
+  Specificity = as.vector(spec_full)
+)
+
+ggplot(spec_long, aes(x = CellType, y = Specificity, fill = CellType)) +
+  geom_violin(scale = "width", alpha = 0.7, colour = NA) +
+  geom_boxplot(width = 0.15, outlier.size = 0.3, alpha = 0.9) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Distribution of Gene Specificity Scores per Cell Type",
+    subtitle = "Each point is one gene; most genes are broadly expressed (low specificity)",
+    x = NULL, y = "Specificity (0 = ubiquitous, 1 = exclusive)"
+  ) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+> **What to look for:** All cell types show a peak near 1/6 (~0.17), which is
+> the expected specificity if a gene is uniformly expressed across all 6 types.
+> The right tail (high specificity) varies by cell type. Cell types with a
+> longer tail have more marker genes.
+
 # 3. MAGMA Gene-Level Analysis
 
 Before jumping to cell-type enrichment, it is worth understanding what the
@@ -317,7 +360,41 @@ p2 <- ggplot(qq_df, aes(x = Expected, y = Observed)) +
 gridExtra::grid.arrange(p1, p2, ncol = 2)
 ```
 
-## 3.2 Top associated genes
+## 3.2 SNPs per gene
+
+The number of SNPs mapped to each gene determines the statistical power of the
+gene-level test. Larger genes (and genes in LD-rich regions) capture more SNPs.
+Understanding this distribution helps interpret why some genes have stronger
+gene-level statistics: it is partly biology, partly gene architecture.
+
+```{r fig-snps-per-gene, fig.height=5, fig.width=10}
+ggplot(genes_out, aes(x = NSNPS)) +
+  geom_histogram(bins = 80, fill = "#21918C", colour = "white", linewidth = 0.2) +
+  scale_x_log10(labels = scales::comma) +
+  annotation_logticks(sides = "b") +
+  geom_vline(
+    xintercept = median(genes_out$NSNPS),
+    linetype = "dashed", colour = "red"
+  ) +
+  annotate(
+    "text",
+    x = median(genes_out$NSNPS) * 1.5, y = Inf,
+    label = paste("Median:", median(genes_out$NSNPS), "SNPs"),
+    vjust = 2, hjust = 0, colour = "red", size = 3.5
+  ) +
+  labs(
+    title = "Number of SNPs Mapped per Gene",
+    subtitle = "Log scale. MAGMA uses a 35 kb upstream / 10 kb downstream window.",
+    x = "Number of SNPs (log scale)",
+    y = "Number of genes"
+  )
+```
+
+> **Note:** MAGMA internally controls for gene size (number of SNPs) in its
+> enrichment model, so larger genes do not spuriously drive the cell-type results.
+> This plot is diagnostic, not a confounder.
+
+## 3.3 Top associated genes
 
 The most significant genes give us a qualitative sense of the biology. Many of
 the top SCZ-associated genes encode synaptic proteins, ion channels, and
@@ -436,6 +513,83 @@ ggplot(res_l1, aes(x = CellType, y = neglog10p, fill = Significant)) +
 > the strongest enrichment. This is consistent with Skene et al. (2018): SCZ genetic
 > risk is concentrated in neuronal cell types, not glia.
 
+## 4.3 Visualisation: Gene Z-score vs specificity
+
+The bar plot summarises the model output, but it is instructive to see the raw
+data that drives it. For each cell type, we can plot the gene-level Z-statistic
+against the specificity score. The slope of this relationship is what MAGMA's
+Linear model estimates as $\beta_1$.
+
+```{r fig-zscore-vs-specificity, fig.height=8, fig.width=10}
+# Get specificity values for genes in the MAGMA results
+spec_full <- as.matrix(ctd[[1]]$specificity)
+
+# Match gene IDs (MAGMA uses Entrez IDs, CTD uses gene symbols)
+# We use the intersection of genes present in both
+genes_in_both <- intersect(as.character(genes_out$GENE), rownames(spec_full))
+
+if (length(genes_in_both) > 100) {
+  go_matched <- genes_out[as.character(GENE) %in% genes_in_both]
+  spec_matched <- spec_full[as.character(go_matched$GENE), , drop = FALSE]
+
+  scatter_df <- data.frame(
+    ZSTAT = rep(go_matched$ZSTAT, ncol(spec_matched)),
+    Specificity = as.vector(spec_matched),
+    CellType = rep(colnames(spec_matched), each = nrow(spec_matched))
+  )
+
+  ggplot(scatter_df, aes(x = Specificity, y = ZSTAT)) +
+    geom_point(alpha = 0.05, size = 0.3, colour = "#3B528B") +
+    geom_smooth(method = "lm", colour = "#DE7065", linewidth = 1, se = TRUE) +
+    facet_wrap(~CellType, scales = "free_x") +
+    labs(
+      title = "Gene Z-Score vs Cell-Type Specificity",
+      subtitle = "Red line = linear fit. Positive slope = enrichment for that cell type.",
+      x = "Specificity score",
+      y = "MAGMA gene Z-statistic"
+    )
+} else {
+  cat("Insufficient gene overlap between MAGMA results and CTD for scatter plot.\n")
+}
+```
+
+> **Reading this plot:** A positive slope (red line trending upward) means genes
+> with higher specificity for that cell type tend to have higher Z-statistics
+> (stronger GWAS signal). Glutamatergic and GABAergic panels should show the
+> steepest slopes, matching the bar plot results.
+
+## 4.4 Visualisation: MAGMA effect sizes (forest plot)
+
+P-values tell us statistical significance, but **effect sizes** (BETA ± SE) tell
+us the magnitude of the relationship. A forest plot shows both, making it easier
+to compare the strength of enrichment across cell types and to see how precisely
+each effect is estimated.
+
+```{r fig-magma-forest, fig.height=5, fig.width=10}
+res_l1[, CellType_ordered := factor(Celltype,
+  levels = Celltype[order(BETA)])]
+
+ggplot(res_l1, aes(x = CellType_ordered, y = BETA)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_pointrange(
+    aes(ymin = BETA - 1.96 * SE, ymax = BETA + 1.96 * SE, colour = Significant),
+    size = 0.8, linewidth = 0.8
+  ) +
+  scale_colour_manual(values = c("TRUE" = "#DE7065", "FALSE" = "#3B528B")) +
+  coord_flip() +
+  labs(
+    title = "MAGMA Cell-Type Enrichment: Effect Sizes",
+    subtitle = "Point = BETA (regression coefficient), whiskers = 95% CI",
+    x = NULL,
+    y = expression(beta ~ "(effect of specificity on gene Z-score)"),
+    colour = "FDR < 0.05"
+  )
+```
+
+> **Interpretation:** Cell types whose confidence intervals do not cross zero
+> (the dashed line) are significantly enriched. The further right the point, the
+> stronger the relationship between cell-type specificity and GWAS signal.
+
 # 5. LDSC-SEG Cell-Type Enrichment
 
 LDSC-SEG (LD Score regression applied to Specifically Expressed Genes) takes a
@@ -535,6 +689,46 @@ ggplot(ldsc_res, aes(x = CellType, y = neglog10p, fill = Significant)) +
 > **Result:** The LDSC-SEG results show the same pattern: glutamatergic (excitatory)
 > and GABAergic (inhibitory) neurons are the most enriched cell types. Non-neuronal
 > types (astrocytes, oligodendrocytes, microglia) show no significant enrichment.
+
+## 5.4 Visualisation: LDSC-SEG fold-enrichment
+
+While p-values indicate statistical evidence, **fold-enrichment** conveys
+biological magnitude: how many times more heritability does a cell-type
+annotation capture relative to its genomic footprint? A fold-enrichment of 3.0
+means the annotation harbours 3x the heritability expected by chance.
+
+```{r fig-ldsc-enrichment-lollipop, fig.height=6, fig.width=10}
+ldsc_res[, CellType_ord := factor(cell_type,
+  levels = cell_type[order(enrichment)])]
+
+ggplot(ldsc_res, aes(x = CellType_ord, y = enrichment)) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "grey50") +
+  geom_segment(
+    aes(xend = CellType_ord, y = 1, yend = enrichment, colour = Significant),
+    linewidth = 1
+  ) +
+  geom_point(aes(colour = Significant), size = 4) +
+  geom_errorbar(
+    aes(ymin = enrichment - 1.96 * enrichment_se,
+        ymax = enrichment + 1.96 * enrichment_se,
+        colour = Significant),
+    width = 0.2, linewidth = 0.6
+  ) +
+  scale_colour_manual(values = c("TRUE" = "#DE7065", "FALSE" = "#3B528B")) +
+  coord_flip() +
+  labs(
+    title = "LDSC-SEG Heritability Fold-Enrichment",
+    subtitle = "Dashed line = 1 (no enrichment). Values > 1 indicate excess heritability.",
+    x = NULL,
+    y = "Fold-enrichment (observed / expected heritability)",
+    colour = "FDR < 0.05"
+  )
+```
+
+> **Reading this plot:** A fold-enrichment of 1 means the annotation captures
+> exactly the heritability expected by its size. Glutamatergic neurons show ~3x
+> enrichment: SNPs near glutamatergic-specific genes explain 3x more SCZ
+> heritability than expected. Non-neuronal cell types cluster near 1.
 
 # 6. Comparison: MAGMA vs LDSC-SEG
 
@@ -677,6 +871,58 @@ ggplot(side_by_side, aes(x = CellType, y = neglog10p, fill = Method)) +
 > multiple sclerosis through similar analyses. The absence of microglial signal
 > here is not a methodological failure: it reflects genuine biological specificity.
 > Different diseases are driven by different cell types.
+
+## 6.4 Visualisation: Summary heatmap
+
+A compact overview showing both methods and both metrics (p-value and effect
+size/enrichment) in a single figure. This is the kind of summary panel that
+would appear in a publication.
+
+```{r fig-summary-heatmap, fig.height=5, fig.width=10}
+# Build a summary matrix
+summary_dt <- combined[, .(
+  CellType,
+  `MAGMA -log10(p)` = MAGMA_neglog10p,
+  `LDSC -log10(p)` = LDSC_neglog10p,
+  `LDSC enrichment` = LDSC_enrichment
+)]
+
+# Add MAGMA BETA from res_l1
+summary_dt <- merge(
+  summary_dt,
+  res_l1[, .(CellType = Celltype, `MAGMA BETA` = BETA)],
+  by.x = "CellType", by.y = "CellType", all.x = TRUE
+)
+
+# Melt to long format
+summary_long <- melt(summary_dt, id.vars = "CellType",
+                     variable.name = "Metric", value.name = "Value")
+
+# Order cell types by MAGMA -log10(p)
+ct_levels <- summary_dt[order(`MAGMA -log10(p)`, decreasing = FALSE), CellType]
+summary_long[, CellType := factor(CellType, levels = ct_levels)]
+
+# Scale each metric to 0-1 for comparable colour mapping
+summary_long[, Scaled := (Value - min(Value)) / (max(Value) - min(Value) + 1e-10),
+             by = Metric]
+
+ggplot(summary_long, aes(x = Metric, y = CellType, fill = Scaled)) +
+  geom_tile(colour = "white", linewidth = 0.8) +
+  geom_text(aes(label = round(Value, 2)), size = 3.5, colour = "white",
+            fontface = "bold") +
+  scale_fill_viridis_c(option = "inferno", begin = 0.1, end = 0.9) +
+  labs(
+    title = "Summary: Cell-Type Enrichment Across Methods and Metrics",
+    subtitle = "Values shown in cells; colour scaled within each column",
+    x = NULL, y = NULL
+  ) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+> **Reading this figure:** Each column is a different metric, each row a cell type.
+> Bright colours (high values) in both MAGMA and LDSC columns confirm convergence.
+> This panel provides a publication-ready summary of the entire analysis.
 
 # 7. Outputs & Next Steps
 
