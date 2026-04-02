@@ -41,7 +41,7 @@ the same cell types, confidence is high.
 
 **In this tutorial we will:**
 
-1. Load pre-computed MAGMA gene-level results for schizophrenia (SCZ3, Trubetskoy et al. 2022)
+1. Load pre-computed MAGMA gene-level results for schizophrenia (Pardinas et al. 2018)
 2. Load the Allen Institute for Brain Science (AIBS) human cortex cell-type reference
 3. Run MAGMA cell-type association analysis
 4. Compare with LDSC-SEG results
@@ -67,15 +67,16 @@ theme_set(theme_minimal(base_size = 14))
 
 MAGMA.Celltyping provides pre-computed gene-level results for many GWAS traits via
 the [MAGMA_Files_Public](https://github.com/neurogenomics/MAGMA_Files_Public) repository.
-The OpenGWAS ID for SCZ3 is `ieu-b-5102`.
+The ID for the Pardinas et al. 2018 SCZ GWAS is `Pardinas2018.SCZ`.
 
 ```{r magma-files, cache=TRUE}
-# Download pre-computed MAGMA gene-level files for SCZ3
-magma_dirs <- MAGMA.Celltyping::import_magma_files(
-  ids = "ieu-b-5102",
+# Download pre-computed MAGMA gene-level files for SCZ (Pardinas 2018)
+# Save to a persistent local directory so files persist across chunks
+magma_dir <- MAGMA.Celltyping::import_magma_files(
+  ids = "Pardinas2018.SCZ",
+  save_dir = file.path(getwd(), "data", "magma_files"),
   return_dir = TRUE
 )
-magma_dir <- magma_dirs[["ieu-b-5102"]]
 cat("MAGMA files downloaded to:", magma_dir, "\n")
 ```
 
@@ -91,7 +92,7 @@ head(genes_out)
 
 - `import_magma_files()` downloaded `.genes.out` and `.genes.raw` files
 - `.genes.out` contains one row per gene with columns: `GENE`, `CHR`, `START`, `STOP`, `NSNPS`, `NPARAM`, `N`, `ZSTAT`, `P`
-- These were pre-computed by running MAGMA annotation + gene-level analysis on the full SCZ3 summary statistics
+- These were pre-computed by running MAGMA annotation + gene-level analysis on the full SCZ summary statistics
 
 ## 2.3 Download Allen Brain Atlas CTD
 
@@ -138,12 +139,14 @@ available_genes <- scz_genes[scz_genes %in% rownames(spec_mat)]
 cat("SCZ genes found in CTD:", length(available_genes), "of", length(scz_genes), "\n")
 
 if (length(available_genes) >= 3) {
-  # Subset and plot
-  spec_subset <- spec_mat[available_genes, , drop = FALSE]
+  # Subset and convert sparse matrix to long format for ggplot
+  spec_subset <- as.matrix(spec_mat[available_genes, , drop = FALSE])
 
-  # Convert to long format for ggplot
-  spec_df <- as.data.frame(as.table(spec_subset))
-  colnames(spec_df) <- c("Gene", "CellType", "Specificity")
+  spec_df <- data.frame(
+    Gene = rep(rownames(spec_subset), ncol(spec_subset)),
+    CellType = rep(colnames(spec_subset), each = nrow(spec_subset)),
+    Specificity = as.vector(spec_subset)
+  )
 
   ggplot(spec_df, aes(x = CellType, y = Gene, fill = Specificity)) +
     geom_tile(colour = "white", linewidth = 0.5) +
@@ -250,7 +253,7 @@ res_l1[, FDR := p.adjust(P, method = "BH")]
 res_l1[, Significant := FDR < 0.05]
 
 knitr::kable(
-  res_l1[, .(CellType = Variable, BETA, SE, P = formatC(P, format = "e", digits = 2),
+  res_l1[, .(CellType = Celltype, BETA, SE, P = formatC(P, format = "e", digits = 2),
              FDR = formatC(FDR, format = "e", digits = 2), Significant)],
   caption = "MAGMA cell-type association results (Linear mode, Level 1)"
 )
@@ -262,7 +265,7 @@ knitr::kable(
 res_l1[, neglog10p := -log10(P)]
 
 # Order cell types by significance
-res_l1[, CellType := factor(Variable, levels = Variable[order(neglog10p)])]
+res_l1[, CellType := factor(Celltype, levels = Celltype[order(neglog10p)])]
 
 ggplot(res_l1, aes(x = CellType, y = neglog10p, fill = Significant)) +
   geom_col(width = 0.7) +
@@ -286,9 +289,9 @@ ggplot(res_l1, aes(x = CellType, y = neglog10p, fill = Significant)) +
   )
 ```
 
-> **Result:** Excitatory and inhibitory neuron types show the strongest enrichment.
-> This is consistent with Skene et al. (2018): SCZ genetic risk is concentrated in
-> neuronal cell types, not glia.
+> **Result:** Glutamatergic (excitatory) and GABAergic (inhibitory) neuron types show
+> the strongest enrichment. This is consistent with Skene et al. (2018): SCZ genetic
+> risk is concentrated in neuronal cell types, not glia.
 
 # 5. LDSC-SEG Cell-Type Enrichment
 
@@ -356,10 +359,9 @@ ggplot(ldsc_res, aes(x = CellType, y = neglog10p, fill = Significant)) +
   )
 ```
 
-> **Result:** The LDSC-SEG results show the same pattern: excitatory neurons
-> (especially L2/3 and L5) and inhibitory neurons (PVALB, SST) are the most
-> enriched cell types. Non-neuronal types (astrocytes, oligodendrocytes, microglia)
-> show no significant enrichment.
+> **Result:** The LDSC-SEG results show the same pattern: glutamatergic (excitatory)
+> and GABAergic (inhibitory) neurons are the most enriched cell types. Non-neuronal
+> types (astrocytes, oligodendrocytes, microglia) show no significant enrichment.
 
 # 6. Comparison: MAGMA vs LDSC-SEG
 
@@ -373,7 +375,7 @@ The real power comes from comparing both methods. When they agree, confidence is
 # We need to match them (this depends on the CTD level 1 cell-type naming)
 
 magma_for_merge <- data.table(
-  CellType = res_l1$Variable,
+  CellType = res_l1$Celltype,
   MAGMA_P = res_l1$P,
   MAGMA_neglog10p = -log10(res_l1$P),
   MAGMA_FDR = res_l1$FDR
@@ -511,7 +513,7 @@ This tutorial used pre-computed gene-level results and a single CTD. A full anal
 - Skene et al. (2018). Genetic identification of brain cell types underlying schizophrenia. *Nature Genetics*, 50, 825-833.
 - de Leeuw et al. (2015). MAGMA: Generalized Gene-Set Analysis of GWAS Data. *PLOS Computational Biology*, 11(4), e1004219.
 - Finucane et al. (2018). Heritability enrichment of specifically expressed genes identifies disease-relevant tissues and cell types. *Nature Genetics*, 50, 621-629.
-- Trubetskoy et al. (2022). Mapping genomic loci implicates genes and synaptic biology in schizophrenia. *Nature*, 604, 502-508.
+- Pardinas et al. (2018). Common schizophrenia alleles are enriched in mutation-intolerant genes and in regions under strong background selection. *Nature Genetics*, 50, 381-389.
 
 ## Session info
 
