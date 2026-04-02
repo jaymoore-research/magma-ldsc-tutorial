@@ -309,6 +309,92 @@ ggplot(spec_long, aes(x = CellType, y = Specificity, fill = CellType)) +
 > The right tail (high specificity) varies by cell type. Cell types with a
 > longer tail have more marker genes.
 
+## 2.6 Visualisation: Mean expression vs specificity
+
+Specificity and mean expression capture different aspects of gene expression.
+A gene can be highly expressed in a cell type but not specific (if it is also
+highly expressed elsewhere), or highly specific but lowly expressed (a rare
+marker). This scatter plot shows the relationship for each cell type. Genes in
+the top-right corner (high expression AND high specificity) are the strongest
+marker genes.
+
+```{r fig-expression-vs-specificity, fig.height=8, fig.width=10}
+# Compare mean expression and specificity for each cell type
+spec_full <- as.matrix(ctd[[1]]$specificity)
+mean_full <- as.matrix(ctd[[1]]$mean_exp)
+
+# Use overlapping genes
+common_genes <- intersect(rownames(spec_full), rownames(mean_full))
+set.seed(42)
+if (length(common_genes) > 3000) {
+  common_genes <- sample(common_genes, 3000)
+}
+
+expr_spec_df <- data.frame(
+  Specificity = as.vector(spec_full[common_genes, ]),
+  MeanExp = as.vector(mean_full[common_genes, ]),
+  CellType = rep(colnames(spec_full), each = length(common_genes))
+)
+
+ggplot(expr_spec_df, aes(x = Specificity, y = log1p(MeanExp))) +
+  geom_point(alpha = 0.08, size = 0.5, colour = "#3B528B") +
+  geom_density_2d(colour = "#DE7065", linewidth = 0.4, bins = 6) +
+  facet_wrap(~CellType) +
+  labs(
+    title = "Mean Expression vs Specificity",
+    subtitle = "Red contours show gene density. Top-right = strong marker genes.",
+    x = "Specificity score",
+    y = "log(1 + mean expression)"
+  )
+```
+
+> **Interpretation:** Most genes cluster at low specificity and moderate expression
+> (broadly expressed housekeeping genes). The scatter toward high specificity reveals
+> each cell type's marker genes. Note how the shape differs between cell types:
+> neuronal types may have more genes with extreme specificity than glial types.
+
+## 2.7 Visualisation: Cell-type specificity correlation matrix
+
+An important consideration for interpreting enrichment results is **how correlated
+the specificity profiles are between cell types**. If two cell types have highly
+correlated specificities (i.e. they share many marker genes), then finding both
+enriched does not represent two independent signals. This is why conditional
+analysis (Section 7.3) is important for fine-grained CTDs.
+
+```{r fig-specificity-correlation, fig.height=6, fig.width=7}
+# Compute pairwise Pearson correlation of specificity across all genes
+spec_full <- as.matrix(ctd[[1]]$specificity)
+cor_mat <- cor(spec_full, method = "pearson")
+
+# Convert to long format
+cor_df <- data.frame(
+  CT1 = rep(rownames(cor_mat), ncol(cor_mat)),
+  CT2 = rep(colnames(cor_mat), each = nrow(cor_mat)),
+  Correlation = as.vector(cor_mat)
+)
+
+ggplot(cor_df, aes(x = CT1, y = CT2, fill = Correlation)) +
+  geom_tile(colour = "white", linewidth = 0.8) +
+  geom_text(aes(label = sprintf("%.2f", Correlation)), size = 3.5,
+            fontface = "bold") +
+  scale_fill_gradient2(low = "#3B528B", mid = "white", high = "#DE7065",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(
+    title = "Pairwise Correlation of Cell-Type Specificity Profiles",
+    subtitle = "Negative correlations expected: if a gene is specific to one type, it is less specific to others",
+    x = NULL, y = NULL
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+> **Why correlations matter:** Specificity values sum to 1 across cell types for
+> each gene, so negative correlations are expected (if a gene goes up in one type,
+> it must go down in others). Strong negative correlations between two cell types
+> mean they compete for the same genes. If both show MAGMA enrichment, their signals
+> are likely independent. If they show a near-zero or positive correlation, shared
+> enrichment could reflect overlapping gene sets, and conditional analysis is needed
+> to disentangle the signals.
+
 # 3. MAGMA Gene-Level Analysis
 
 Before jumping to cell-type enrichment, it is worth understanding what the
@@ -394,7 +480,56 @@ ggplot(genes_out, aes(x = NSNPS)) +
 > enrichment model, so larger genes do not spuriously drive the cell-type results.
 > This plot is diagnostic, not a confounder.
 
-## 3.3 Top associated genes
+## 3.3 Gene-level Manhattan plot
+
+A Manhattan plot is the standard way to visualise genome-wide association results.
+Here we show the gene-level version: each point is a gene, positioned by
+chromosome and coloured by alternating chromosomes for readability. Genes above
+the red line are genome-wide significant at the gene level.
+
+```{r fig-gene-manhattan, fig.height=5, fig.width=12}
+# Prepare Manhattan plot data
+manhattan_df <- copy(genes_out)
+manhattan_df[, neglog10p := -log10(P)]
+manhattan_df[, CHR := as.integer(CHR)]
+manhattan_df <- manhattan_df[!is.na(CHR) & CHR %in% 1:22]
+
+# Calculate cumulative position for x-axis
+chr_offset <- manhattan_df[, .(max_pos = max(START, na.rm = TRUE)), by = CHR]
+chr_offset <- chr_offset[order(CHR)]
+chr_offset[, cum_offset := cumsum(shift(max_pos, fill = 0))]
+manhattan_df <- merge(manhattan_df, chr_offset[, .(CHR, cum_offset)], by = "CHR")
+manhattan_df[, cum_pos := START + cum_offset]
+
+# Chromosome midpoints for axis labels
+chr_mid <- manhattan_df[, .(mid = median(cum_pos)), by = CHR]
+
+# Genome-wide significance threshold (Bonferroni for ~18000 genes)
+gw_threshold <- -log10(0.05 / nrow(manhattan_df))
+
+ggplot(manhattan_df, aes(x = cum_pos, y = neglog10p, colour = factor(CHR %% 2))) +
+  geom_point(size = 0.6, alpha = 0.6) +
+  geom_hline(yintercept = gw_threshold, linetype = "dashed", colour = "red",
+             linewidth = 0.5) +
+  scale_colour_manual(values = c("0" = "#3B528B", "1" = "#21918C"), guide = "none") +
+  scale_x_continuous(breaks = chr_mid$mid, labels = chr_mid$CHR) +
+  labs(
+    title = "Gene-Level Manhattan Plot: Schizophrenia (Pardinas 2018)",
+    subtitle = paste("Red line = Bonferroni threshold (p <",
+                     formatC(0.05 / nrow(manhattan_df), format = "e", digits = 1), ")"),
+    x = "Chromosome",
+    y = expression(-log[10](gene-level ~ p-value))
+  ) +
+  theme(panel.grid.major.x = element_blank())
+```
+
+> **Reading this plot:** Peaks above the red line represent genomic regions
+> with strong gene-level SCZ association. The signal is spread across many
+> chromosomes, consistent with the highly polygenic architecture of SCZ.
+> The MHC region on chromosome 6 typically shows the strongest signal in SCZ
+> GWAS due to its complex LD structure and immune-related associations.
+
+## 3.4 Top associated genes
 
 The most significant genes give us a qualitative sense of the biology. Many of
 the top SCZ-associated genes encode synaptic proteins, ion channels, and
@@ -590,6 +725,64 @@ ggplot(res_l1, aes(x = CellType_ordered, y = BETA)) +
 > (the dashed line) are significantly enriched. The further right the point, the
 > stronger the relationship between cell-type specificity and GWAS signal.
 
+## 4.5 Visualisation: Top marker genes per cell type
+
+MAGMA's "Top 10%" enrichment mode (an alternative to the Linear mode we used)
+defines marker genes as those in the top decile of specificity for each cell type.
+Even though we used the Linear mode here, it is instructive to see how many genes
+fall in the top 10% for each type, and how much overlap there is between types.
+High overlap means the cell types share marker genes, which complicates
+interpretation and motivates conditional analysis.
+
+```{r fig-marker-gene-counts, fig.height=6, fig.width=10}
+# Define top 10% marker genes for each cell type
+spec_full <- as.matrix(ctd[[1]]$specificity)
+n_top <- ceiling(nrow(spec_full) * 0.10)
+
+marker_list <- lapply(colnames(spec_full), function(ct) {
+  rownames(spec_full)[order(spec_full[, ct], decreasing = TRUE)[1:n_top]]
+})
+names(marker_list) <- colnames(spec_full)
+
+# Count how many cell types each gene is a top-10% marker for
+all_markers <- unlist(marker_list)
+gene_counts <- table(all_markers)
+sharing_df <- data.frame(
+  NumTypes = as.integer(gene_counts),
+  Count = 1
+)
+sharing_summary <- aggregate(Count ~ NumTypes, data = sharing_df, FUN = sum)
+
+# Two-panel: marker counts per type + sharing distribution
+p1 <- ggplot(
+  data.frame(CellType = names(marker_list), N = sapply(marker_list, length)),
+  aes(x = reorder(CellType, N), y = N)
+) +
+  geom_col(fill = "#21918C", width = 0.6) +
+  geom_text(aes(label = N), hjust = -0.2, size = 3.5) +
+  coord_flip() +
+  labs(title = "Number of Top-10% Marker Genes per Cell Type",
+       x = NULL, y = "Number of genes")
+
+p2 <- ggplot(sharing_summary, aes(x = factor(NumTypes), y = Count)) +
+  geom_col(fill = "#FCA636", width = 0.6) +
+  geom_text(aes(label = Count), vjust = -0.3, size = 3.5) +
+  labs(
+    title = "Marker Gene Sharing Across Cell Types",
+    subtitle = "How many cell types is each marker gene a top-10% gene for?",
+    x = "Number of cell types (out of 6)",
+    y = "Number of genes"
+  )
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+> **Key insight:** If most marker genes are unique to one cell type (bar at "1"
+> is tallest), the enrichment signals are relatively independent. If many genes
+> appear in the top 10% for multiple types, the cell types share expression
+> programmes, and a significant result for one may "leak" into another. This is
+> why conditional analysis (Section 7.3) is essential for publication-quality work.
+
 # 5. LDSC-SEG Cell-Type Enrichment
 
 LDSC-SEG (LD Score regression applied to Specifically Expressed Genes) takes a
@@ -729,6 +922,41 @@ ggplot(ldsc_res, aes(x = CellType_ord, y = enrichment)) +
 > exactly the heritability expected by its size. Glutamatergic neurons show ~3x
 > enrichment: SNPs near glutamatergic-specific genes explain 3x more SCZ
 > heritability than expected. Non-neuronal cell types cluster near 1.
+
+## 5.5 Visualisation: LDSC-SEG coefficient forest plot
+
+For direct comparability with the MAGMA forest plot (Section 4.4), here is the
+LDSC-SEG regression coefficient with 95% confidence intervals. The coefficient
+represents the contribution of each cell-type annotation to per-SNP heritability,
+after controlling for the 53 baseline annotations.
+
+```{r fig-ldsc-forest, fig.height=5, fig.width=10}
+ldsc_res[, CellType_coef_ord := factor(cell_type,
+  levels = cell_type[order(coefficient)])]
+
+ggplot(ldsc_res, aes(x = CellType_coef_ord, y = coefficient)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_pointrange(
+    aes(ymin = coefficient - 1.96 * coefficient_se,
+        ymax = coefficient + 1.96 * coefficient_se,
+        colour = Significant),
+    size = 0.8, linewidth = 0.8
+  ) +
+  scale_colour_manual(values = c("TRUE" = "#DE7065", "FALSE" = "#3B528B")) +
+  coord_flip() +
+  labs(
+    title = "LDSC-SEG Cell-Type Coefficients",
+    subtitle = "Point = regression coefficient, whiskers = 95% CI. Positive = excess heritability.",
+    x = NULL,
+    y = "LDSC coefficient (contribution to per-SNP heritability)",
+    colour = "FDR < 0.05"
+  )
+```
+
+> **Comparing with MAGMA (Section 4.4):** Both forest plots should show the same
+> pattern: neuronal cell types with positive coefficients (confidence intervals
+> above zero) and glial types centred near zero. The fact that two different
+> effect-size metrics (MAGMA BETA and LDSC coefficient) agree adds confidence.
 
 # 6. Comparison: MAGMA vs LDSC-SEG
 
@@ -923,6 +1151,47 @@ ggplot(summary_long, aes(x = Metric, y = CellType, fill = Scaled)) +
 > **Reading this figure:** Each column is a different metric, each row a cell type.
 > Bright colours (high values) in both MAGMA and LDSC columns confirm convergence.
 > This panel provides a publication-ready summary of the entire analysis.
+
+## 6.5 Visualisation: Rank concordance
+
+A complementary way to assess agreement is to compare the **rank order** of cell
+types between methods. If both methods rank the same cell types at the top,
+Spearman's rank correlation will be high. This is more robust than comparing raw
+p-values, which can differ in magnitude even when the ranking is identical.
+
+```{r fig-rank-concordance, fig.height=6, fig.width=8}
+# Compute ranks (1 = most significant)
+rank_dt <- combined[, .(
+  CellType,
+  MAGMA_rank = rank(-MAGMA_neglog10p),
+  LDSC_rank = rank(-LDSC_neglog10p)
+)]
+
+# Spearman correlation
+rho <- cor(rank_dt$MAGMA_rank, rank_dt$LDSC_rank, method = "spearman")
+
+ggplot(rank_dt, aes(x = MAGMA_rank, y = LDSC_rank)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_point(size = 5, colour = "#3B528B", alpha = 0.8) +
+  ggrepel::geom_text_repel(aes(label = CellType), size = 3.5, max.overlaps = 20) +
+  annotate("text", x = Inf, y = Inf,
+           label = paste0("Spearman rho = ", round(rho, 2)),
+           hjust = 1.1, vjust = 1.5, size = 5, fontface = "italic",
+           colour = "#DE7065") +
+  scale_x_continuous(breaks = 1:nrow(rank_dt)) +
+  scale_y_continuous(breaks = 1:nrow(rank_dt)) +
+  labs(
+    title = "Rank Concordance: MAGMA vs LDSC-SEG",
+    subtitle = "1 = most significant. Points on diagonal = identical ranking.",
+    x = "MAGMA rank (1 = most enriched)",
+    y = "LDSC-SEG rank (1 = most enriched)"
+  )
+```
+
+> **Interpretation:** A Spearman rho near 1.0 means both methods rank cell types
+> in the same order, even if the absolute p-values differ. Points on or near the
+> diagonal indicate agreement. Points far from the diagonal highlight cell types
+> where the methods disagree on relative importance.
 
 # 7. Outputs & Next Steps
 
