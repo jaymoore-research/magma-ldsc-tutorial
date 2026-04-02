@@ -1,0 +1,23 @@
+# Generated outputs
+results/
+figures/
+*.html
+
+# R / RStudio
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+renv/library/
+renv/staging/
+renv/sandbox/
+
+# MAGMA binary and cached data
+magma_*
+*.genes.out
+*.genes.raw
+*.genes.annot
+*.gsa.out
+
+# OS
+.DS_Store
