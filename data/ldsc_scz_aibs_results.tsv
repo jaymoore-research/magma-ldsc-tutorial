@@ -1,0 +1,15 @@
+cell_type	coefficient	coefficient_se	coefficient_z	coefficient_p	enrichment	enrichment_se	enrichment_p
+Astrocyte	0.012	0.021	0.571	0.284	1.2	0.4	0.31
+Endothelial	-0.008	0.019	-0.421	0.663	0.8	0.3	0.72
+Excitatory_L23	0.089	0.024	3.708	0.0001	3.1	0.6	0.00012
+Excitatory_L4	0.076	0.025	3.040	0.0012	2.8	0.5	0.0015
+Excitatory_L5	0.082	0.023	3.565	0.0002	2.9	0.5	0.00025
+Excitatory_L56	0.071	0.026	2.731	0.0032	2.6	0.6	0.0038
+Excitatory_L6	0.061	0.024	2.542	0.0055	2.4	0.5	0.0062
+Inhibitory_LAMP5	0.048	0.022	2.182	0.0146	2.1	0.5	0.017
+Inhibitory_PVALB	0.065	0.023	2.826	0.0024	2.5	0.5	0.0029
+Inhibitory_SST	0.058	0.024	2.417	0.0078	2.3	0.6	0.0091
+Inhibitory_VIP	0.042	0.023	1.826	0.0339	1.9	0.5	0.039
+Microglia	0.015	0.020	0.750	0.227	1.3	0.4	0.24
+OPC	0.009	0.018	0.500	0.309	1.1	0.3	0.35
+Oligodendrocyte	0.005	0.017	0.294	0.384	1.0	0.3	0.42
