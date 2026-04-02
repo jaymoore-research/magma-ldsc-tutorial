@@ -130,6 +130,12 @@ magma_dir <- MAGMA.Celltyping::import_magma_files(
 cat("MAGMA files downloaded to:", magma_dir, "\n")
 ```
 
+Let's read the `.genes.out` file and inspect its structure. Each row is a gene,
+identified by its Entrez ID. The `ZSTAT` column is the gene-level Z-score:
+positive values indicate that SNPs in/near the gene tend to have lower GWAS
+p-values than expected by chance. The `P` column is the corresponding two-sided
+p-value.
+
 ```{r inspect-genes-out}
 # Read and inspect the gene-level results
 genes_out_file <- list.files(magma_dir, pattern = "\\.genes\\.out$", full.names = TRUE)
@@ -137,6 +143,11 @@ genes_out <- fread(genes_out_file[1])
 cat("Gene-level results:", nrow(genes_out), "genes\n")
 head(genes_out)
 ```
+
+The table above shows the first few rows. Note the variation in `NSNPS` (number
+of SNPs mapped to each gene): this depends on gene size and local SNP density.
+`NPARAM` is the number of independent parameters in MAGMA's multi-SNP model for
+that gene, which is often less than `NSNPS` due to LD between SNPs.
 
 **What just happened:**
 
@@ -176,6 +187,10 @@ MAGMA how to weight genes by their cell-type identity.
 # Download the AIBS human cortex CTD
 ctd <- MAGMA.Celltyping::get_ctd("ctd_AIBS")
 ```
+
+Let's inspect the CTD structure. The key thing to check is: how many annotation
+levels are there, how many genes are covered, and what cell types are defined at
+each level.
 
 ```{r inspect-ctd}
 # CTD structure: list of annotation levels
@@ -548,10 +563,20 @@ knitr::kable(
 
 **What these results mean:**
 
-- MAGMA aggregates SNP-level association signals within each gene (plus flanking regions)
-- The gene-level P-value tests whether SNPs in/near a gene show stronger association than expected
-- The inflation in the QQ plot (deviation from the diagonal) reflects polygenicity: many genes harbour true SCZ associations
-- These gene-level statistics are the input to the cell-type enrichment step
+- MAGMA aggregates SNP-level association signals within each gene (plus flanking
+  regions of 35 kb upstream and 10 kb downstream). The aggregation uses a
+  multi-SNP model that accounts for LD between SNPs within the gene, so the
+  gene-level p-value is not simply the minimum SNP p-value.
+- The gene-level P-value tests whether SNPs in/near a gene show stronger
+  association than expected under the null. A small p-value means the gene
+  harbours more GWAS signal than chance would predict.
+- The inflation in the QQ plot (deviation from the diagonal) reflects
+  **polygenicity**: many genes harbour true SCZ associations. This is expected
+  for a complex trait with thousands of causal variants. If the QQ plot showed
+  no inflation, the GWAS would lack power for cell-type enrichment analysis.
+- These gene-level statistics (Z-scores and p-values) are the primary input to
+  the cell-type enrichment step in Section 4. MAGMA will test whether genes
+  with high Z-scores tend to be specifically expressed in particular cell types.
 
 # 4. MAGMA Cell-Type Association
 
@@ -576,6 +601,20 @@ that cell type have stronger GWAS associations than expected, after controlling
 for confounders. This is a **competitive test**: it asks whether the cell type
 explains association *beyond* what other cell types explain.
 
+The function `calculate_celltype_associations()` handles the full pipeline:
+
+1. It reads the `.genes.raw` correlation matrix from `magma_dir`
+2. It prepares the specificity matrix from the CTD (binning into quantiles for
+   MAGMA's internal format)
+3. For each cell type, it writes a temporary covariate file and calls the MAGMA
+   binary with the `--gene-covar` flag
+4. It parses the `.gsa.out` output file and returns structured results
+
+The `ctd_species = "human"` parameter tells MAGMA.Celltyping that no cross-species
+gene name conversion is needed (the CTD and GWAS both use human gene identifiers).
+If we were using a mouse CTD, the package would automatically convert mouse gene
+symbols to human orthologs via the `orthogene` package.
+
 ```{r magma-celltype, cache=TRUE}
 # Run cell-type association using the Linear enrichment mode
 # Tests: do genes with higher specificity for cell type X have stronger GWAS signal?
@@ -587,6 +626,10 @@ magma_results <- MAGMA.Celltyping::calculate_celltype_associations(
   ctd_species = "human"
 )
 ```
+
+The output is a list with one element per CTD level tested. Each element contains
+a `$results` data frame with columns for cell type name, regression BETA,
+standard error (SE), and p-value (P). Let's extract and format these results.
 
 ```{r magma-results-table}
 # Extract results for Level 1
@@ -647,6 +690,13 @@ ggplot(res_l1, aes(x = CellType, y = neglog10p, fill = Significant)) +
 > **Result:** Glutamatergic (excitatory) and GABAergic (inhibitory) neuron types show
 > the strongest enrichment. This is consistent with Skene et al. (2018): SCZ genetic
 > risk is concentrated in neuronal cell types, not glia.
+>
+> **What the bar heights mean in practice:** A cell type with -log10(p) = 4 means
+> there is a 1-in-10,000 chance of seeing this strong a relationship between
+> specificity and gene-level association under the null hypothesis. For neuronal
+> cell types, the signal is typically orders of magnitude beyond the significance
+> threshold, indicating a robust finding that would survive even aggressive
+> multiple testing correction across many CTD levels and GWAS traits.
 
 ## 4.3 Visualisation: Gene Z-score vs specificity
 
@@ -828,6 +878,13 @@ pre-computed results. The key output columns are:
   explains 3x more heritability than expected given the proportion of SNPs
   it contains.
 
+The pre-computed results file contains one row per cell type, with columns for
+the regression coefficient, its standard error, and the resulting p-value. The
+`enrichment` column is derived from the coefficient and represents the
+fold-enrichment of heritability in the cell-type annotation relative to its
+genomic size. An enrichment of 1.0 means no enrichment; values above 1.0 mean
+the annotation captures more heritability than its size would predict.
+
 ```{r ldsc-results}
 # Load pre-computed LDSC-SEG results
 ldsc_res <- fread("data/ldsc_scz_aibs_results.tsv")
@@ -998,16 +1055,28 @@ cat("LDSC cell types:\n")
 cat(paste(ldsc_for_merge$CellType, collapse = "\n"), "\n")
 ```
 
+We now merge the two results tables on the shared `CellType` column. In practice,
+cell-type names may differ between MAGMA (which uses CTD column names) and
+LDSC-SEG (which uses annotation file names). Here, because we built the LDSC
+fallback data to use the same names as the CTD, the merge is exact. In a real
+analysis with independently run LDSC-SEG, you would need to harmonise names
+manually or via a mapping table.
+
+After merging, we classify each cell type into one of three agreement categories:
+
+- **Both significant**: FDR < 0.05 in both methods. Strongest evidence.
+- **Neither significant**: FDR >= 0.05 in both. Consistent null.
+- **Discordant**: Significant in one method but not the other. Warrants
+  investigation: could be a genuine difference in method sensitivity, or could
+  indicate a confound that one method controls for but the other does not.
+
 ```{r merge-and-compare}
-# Merge on matching cell-type names
-# If names don't match exactly, we do a best-effort fuzzy join
-# For this tutorial, we match what we can
 combined <- merge(magma_for_merge, ldsc_for_merge, by = "CellType", all = TRUE)
 combined <- combined[complete.cases(combined)]
 
 cat(nrow(combined), "cell types matched between MAGMA and LDSC-SEG\n")
 
-# Classification
+# Classification into three agreement categories
 combined[, Agreement := fifelse(
   MAGMA_FDR < 0.05 & LDSC_FDR < 0.05, "Both significant",
   fifelse(
@@ -1197,6 +1266,11 @@ ggplot(rank_dt, aes(x = MAGMA_rank, y = LDSC_rank)) +
 
 ## 7.1 Save results
 
+We save two result files: the full MAGMA cell-type results and the merged
+comparison table. These TSV files can be loaded into any downstream analysis
+(e.g. cross-trait comparison, meta-analysis of cell-type enrichments across
+studies, or integration with other genomic annotations).
+
 ```{r save-results}
 # Save combined results
 fwrite(combined, "results/magma_vs_ldsc_comparison.tsv", sep = "\t")
@@ -1206,11 +1280,18 @@ cat("Results saved to results/\n")
 
 ## 7.2 What we generated
 
-| File | Contents |
-|------|----------|
-| `results/magma_celltype_results.tsv` | MAGMA cell-type enrichment p-values |
-| `results/magma_vs_ldsc_comparison.tsv` | Side-by-side MAGMA vs LDSC results |
-| `figures/` | All plots generated above |
+This tutorial produced the following outputs:
+
+| File | Contents | How to use |
+|------|----------|------------|
+| `results/magma_celltype_results.tsv` | MAGMA cell-type enrichment p-values, BETAs, SEs, FDR | Input for cross-trait comparison or conditional analysis |
+| `results/magma_vs_ldsc_comparison.tsv` | Side-by-side MAGMA vs LDSC results with agreement classification | Publication supplementary table |
+| `figures/` | All 18 plots generated above (PNG format) | Figures for presentations and papers |
+
+The `figures/` directory contains publication-quality PNGs at the dimensions
+specified in the YAML header (10 x 6 inches by default). To change the output
+format or resolution, modify the `fig.path`, `fig.width`, `fig.height`, and
+`dpi` options in the `knitr::opts_chunk$set()` call at the top of this document.
 
 ## 7.3 Next steps for a full analysis
 
@@ -1250,12 +1331,28 @@ production analysis would extend this in several directions:
 
 ## 7.4 Key references
 
-- Skene et al. (2018). Genetic identification of brain cell types underlying schizophrenia. *Nature Genetics*, 50, 825-833.
-- de Leeuw et al. (2015). MAGMA: Generalized Gene-Set Analysis of GWAS Data. *PLOS Computational Biology*, 11(4), e1004219.
-- Finucane et al. (2018). Heritability enrichment of specifically expressed genes identifies disease-relevant tissues and cell types. *Nature Genetics*, 50, 621-629.
-- Pardinas et al. (2018). Common schizophrenia alleles are enriched in mutation-intolerant genes and in regions under strong background selection. *Nature Genetics*, 50, 381-389.
+The methods and data used in this tutorial are described in the following papers:
+
+**Cell-type enrichment methods:**
+
+- Skene et al. (2018). Genetic identification of brain cell types underlying schizophrenia. *Nature Genetics*, 50, 825-833. — The paper that introduced MAGMA.Celltyping and demonstrated the convergence of MAGMA and LDSC-SEG for SCZ cell-type enrichment.
+- de Leeuw et al. (2015). MAGMA: Generalized Gene-Set Analysis of GWAS Data. *PLOS Computational Biology*, 11(4), e1004219. — The original MAGMA paper describing the gene-level analysis and gene-property analysis framework.
+- Finucane et al. (2018). Heritability enrichment of specifically expressed genes identifies disease-relevant tissues and cell types. *Nature Genetics*, 50, 621-629. — The LDSC-SEG paper introducing partitioned heritability by cell-type-specific annotations.
+
+**GWAS data:**
+
+- Pardinas et al. (2018). Common schizophrenia alleles are enriched in mutation-intolerant genes and in regions under strong background selection. *Nature Genetics*, 50, 381-389. — The SCZ GWAS used in this tutorial.
+
+**Further reading:**
+
+- Bryois et al. (2020). Genetic identification of cell types underlying brain complex traits yields insights into the etiology of Parkinson's disease. *Nature Genetics*, 52, 482-493. — Extended MAGMA/LDSC-SEG analysis across 18 brain disorders.
+- Bulik-Sullivan et al. (2015). LD Score regression distinguishes confounding from polygenicity in genome-wide association studies. *Nature Genetics*, 47, 291-295. — The foundational LDSC paper.
 
 ## Session info
+
+The session information below records the exact R version and package versions
+used to generate this document, ensuring reproducibility. If you encounter
+different results, compare your package versions with those listed here.
 
 ```{r session-info}
 sessionInfo()
