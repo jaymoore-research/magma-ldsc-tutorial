@@ -1,0 +1,24 @@
+{
+  "bioconductor.version": null,
+  "external.libraries": [
+    "/Users/jaymoore/Documents/JAY_PhD/imperial/magma-ldsc-tutorial/renv/library/macos/R-4.5/aarch64-apple-darwin20",
+    "/Library/Frameworks/R.framework/Versions/4.5-arm64/Resources/library",
+    "/Users/jaymoore/Library/Caches/org.R-project.R/R/renv/sandbox/macos/R-4.5/aarch64-apple-darwin20/4cd76b74"
+  ],
+  "ignored.packages": [],
+  "package.dependency.fields": [
+    "Imports",
+    "Depends",
+    "LinkingTo"
+  ],
+  "ppm.enabled": null,
+  "ppm.ignored.urls": [],
+  "r.version": null,
+  "snapshot.dev": false,
+  "snapshot.type": "implicit",
+  "use.cache": true,
+  "vcs.ignore.cellar": true,
+  "vcs.ignore.library": true,
+  "vcs.ignore.local": true,
+  "vcs.manage.ignores": true
+}
